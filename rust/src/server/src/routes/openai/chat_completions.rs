@@ -135,13 +135,11 @@ async fn collect_chat_completion(
     })?;
     let CollectedAssistantMessage {
         message,
-        prompt_token_count,
         prompt_token_ids,
         prompt_logprobs,
         logprobs,
         token_ids,
-        output_token_count,
-        cached_token_count,
+        usage,
         finish_reason,
         kv_transfer_params,
     } = collected;
@@ -186,7 +184,7 @@ async fn collect_chat_completion(
     } else {
         None
     };
-    let usage = Usage::from_counts(prompt_token_count, output_token_count, cached_token_count);
+    let usage = Usage::from(usage);
 
     if log_request {
         info!(
@@ -394,18 +392,16 @@ async fn chat_completion_chunk_stream(
                 debug!("ending current tool call");
             }
             Ok(ChatEvent::Done {
-                prompt_token_count,
+                usage,
                 finish_reason,
-                output_token_count,
-                cached_token_count,
                 ..
             }) => {
                 if log_request {
                     info!(
                         stream = true,
                         model = %response_model,
-                        prompt_tokens = prompt_token_count,
-                        output_tokens = output_token_count,
+                        prompt_tokens = usage.prompt_token_count,
+                        output_tokens = usage.output_token_count,
                         finish_reason = finish_reason.as_str(),
                         "chat completion finished"
                     );
@@ -440,11 +436,7 @@ async fn chat_completion_chunk_stream(
                         &request_id,
                         &response_model,
                         created,
-                        Usage::from_counts(
-                            prompt_token_count,
-                            output_token_count,
-                            cached_token_count,
-                        ),
+                        usage.into(),
                     ))
                     .await;
                 }
@@ -927,9 +919,11 @@ mod tests {
             }),
             Ok(ChatEvent::Done {
                 message: Default::default(),
-                prompt_token_count: 1,
-                output_token_count: 1,
-                cached_token_count: 1,
+                usage: vllm_llm::TokenUsage {
+                    prompt_token_count: 1,
+                    output_token_count: 1,
+                    cached_token_count: 1,
+                },
                 finish_reason: FinishReason::stop_eos(),
                 kv_transfer_params: None,
             }),
@@ -1002,9 +996,11 @@ mod tests {
             }),
             Ok(ChatEvent::Done {
                 message: Default::default(),
-                prompt_token_count: 1,
-                output_token_count: 1,
-                cached_token_count: 0,
+                usage: vllm_llm::TokenUsage {
+                    prompt_token_count: 1,
+                    output_token_count: 1,
+                    cached_token_count: 0,
+                },
                 finish_reason: FinishReason::stop_eos(),
                 kv_transfer_params: None,
             }),
@@ -1055,9 +1051,11 @@ mod tests {
             }),
             Ok(ChatEvent::Done {
                 message: Default::default(),
-                prompt_token_count: 1,
-                output_token_count: 2,
-                cached_token_count: 0,
+                usage: vllm_llm::TokenUsage {
+                    prompt_token_count: 1,
+                    output_token_count: 2,
+                    cached_token_count: 0,
+                },
                 finish_reason: FinishReason::stop_eos(),
                 kv_transfer_params: None,
             }),
@@ -1134,9 +1132,11 @@ mod tests {
             }),
             Ok(ChatEvent::Done {
                 message: Default::default(),
-                prompt_token_count: 1,
-                output_token_count: 2,
-                cached_token_count: 0,
+                usage: vllm_llm::TokenUsage {
+                    prompt_token_count: 1,
+                    output_token_count: 2,
+                    cached_token_count: 0,
+                },
                 finish_reason: FinishReason::stop_eos(),
                 kv_transfer_params: None,
             }),
@@ -1265,9 +1265,11 @@ mod tests {
             }),
             Ok(ChatEvent::Done {
                 message: Default::default(),
-                prompt_token_count: 1,
-                output_token_count: 4,
-                cached_token_count: 0,
+                usage: vllm_llm::TokenUsage {
+                    prompt_token_count: 1,
+                    output_token_count: 4,
+                    cached_token_count: 0,
+                },
                 finish_reason: FinishReason::stop_eos(),
                 kv_transfer_params: None,
             }),
@@ -1344,9 +1346,11 @@ mod tests {
             }),
             Ok(ChatEvent::Done {
                 message: Default::default(),
-                prompt_token_count: 1,
-                output_token_count: 1,
-                cached_token_count: 0,
+                usage: vllm_llm::TokenUsage {
+                    prompt_token_count: 1,
+                    output_token_count: 1,
+                    cached_token_count: 0,
+                },
                 finish_reason: FinishReason::stop_eos(),
                 kv_transfer_params: None,
             }),
