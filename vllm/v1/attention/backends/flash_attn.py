@@ -3,6 +3,7 @@
 """Attention layer with FlashAttention."""
 
 import copy
+from collections.abc import Iterable
 from dataclasses import dataclass
 from typing import ClassVar
 
@@ -301,14 +302,20 @@ class FlashAttentionMetadata:
 
 def _get_sliding_window_configs(
     vllm_config: VllmConfig,
+    layer_names: Iterable[str] | None = None,
 ) -> set[tuple[int, int] | None]:
-    """Get the set of all sliding window configs used in the model.
+    """Get the set of sliding window configs used by ``layer_names``.
+
+    Only the layers a builder actually serves are inspected; layers owned by
+    other builders (e.g. a speculative drafter's sliding-window layers next to
+    a full-attention target) must not disable this builder's AOT schedule.
+    ``layer_names=None`` inspects every layer in the model.
 
     Only inspects FlashAttentionImpl layers. Other backends (e.g.
     TurboQuant, MLA) use their own metadata builders and are skipped.
     """
     sliding_window_configs: set[tuple[int, int] | None] = set()
-    layers = get_layers_from_vllm_config(vllm_config, Attention)
+    layers = get_layers_from_vllm_config(vllm_config, Attention, layer_names)
     for layer in layers.values():
         if not isinstance(layer.impl, FlashAttentionImpl):
             continue
@@ -484,11 +491,13 @@ class FlashAttentionMetadataBuilder(AttentionMetadataBuilder[FlashAttentionMetad
         if self.aot_sliding_window is None:
             self.aot_sliding_window = (-1, -1)
             # For the AOT scheduler we need the sliding window value to be
-            # constant for all layers to. We have to populate this on the first
-            # build() call so the layers are constructed (cannot populate)
-            # in __init__.
+            # constant across the layers this builder serves. We have to
+            # populate this on the first build() call so the layers are
+            # constructed (cannot populate) in __init__.
             if aot_schedule:
-                sliding_window_configs = _get_sliding_window_configs(self.vllm_config)
+                sliding_window_configs = _get_sliding_window_configs(
+                    self.vllm_config, self.layer_names
+                )
                 if len(sliding_window_configs) == 1:
                     sliding_window_config = sliding_window_configs.pop()
                     if sliding_window_config is not None:
