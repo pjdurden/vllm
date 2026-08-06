@@ -20,6 +20,34 @@ from vllm.v1.spec_decode.utils import (
 logger = init_logger(__name__)
 
 
+def sequence_positions(
+    cad: CommonAttentionMetadata, num_tokens: int, arange: torch.Tensor
+) -> torch.Tensor:
+    """Index of each of the batch's tokens within its own sequence.
+
+    Rebuilds the model runner's 1-D ``positions`` buffer from ``cad`` so that
+    DFlash gets sequence indices regardless of the target's RoPE flavor.
+
+    Args:
+        cad: Attention metadata of the target batch.
+        num_tokens: Number of tokens in the batch (``cad.num_actual_tokens``).
+        arange: ``[0, 1, 2, ...]`` of at least ``num_tokens`` elements.
+
+    Returns:
+        ``[num_tokens]`` sequence index of every token in the batch.
+    """
+    num_reqs = cad.batch_size()
+    query_start_loc = cad.query_start_loc[: num_reqs + 1]
+    query_lens = query_start_loc[1:] - query_start_loc[:-1]
+    # num_computed_tokens - query_start_loc per request; adding the flat token
+    # index then yields the token's index within its own sequence.
+    base = (cad.seq_lens[:num_reqs] - query_lens - query_start_loc[:-1]).to(torch.int64)
+    offsets = torch.repeat_interleave(
+        base, query_lens.to(torch.int64), output_size=num_tokens
+    )
+    return offsets + arange[:num_tokens]
+
+
 class DFlashProposer(SpecDecodeBaseProposer):
     def __init__(
         self,
@@ -74,6 +102,15 @@ class DFlashProposer(SpecDecodeBaseProposer):
         # For DFlash we use the input embeddings to embed the mask token
         self.parallel_drafting_hidden_state_tensor = None
 
+        # DFlash derives its KV cache slots from the token positions it is given,
+        # so those must be sequence indices. Multi-dimensional RoPE targets pass
+        # rope positions instead, which drift away from the sequence index as soon
+        # as multimodal inputs are present, so rebuild the indices for them.
+        target_model_config = vllm_config.model_config
+        self.target_uses_multidim_rope = (
+            target_model_config.uses_mrope or target_model_config.uses_xdrope_dim > 0
+        )
+
         from vllm.model_executor.models.qwen3_dflash import dflash_has_any_non_causal
 
         self.dflash_causal = not dflash_has_any_non_causal(
@@ -118,6 +155,9 @@ class DFlashProposer(SpecDecodeBaseProposer):
         num_context = target_token_ids.shape[0]
         num_query_per_req = 1 + self.num_speculative_tokens
         num_query_total = batch_size * num_query_per_req
+
+        if self.target_uses_multidim_rope:
+            target_positions = sequence_positions(cad, num_context, self.arange)
 
         # Store for build_model_inputs_first_pass to use
         self._dflash_num_context = num_context
