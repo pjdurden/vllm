@@ -14,6 +14,7 @@ import numpy as np
 import pytest
 import torch
 import torch.distributed as dist
+import zmq
 
 from vllm.distributed.device_communicators import shm_broadcast
 from vllm.distributed.device_communicators.shm_broadcast import (
@@ -677,6 +678,47 @@ def test_warning_logs(caplog_vllm):
         # Clean up when done
         writer.shutdown()
         reader.shutdown()
+
+
+def test_remote_sockets_enable_heartbeats():
+    """Cross-node sockets must heartbeat so an idle TCP connection is not
+    silently reaped. PUB/SUB never retransmits, so everything published while
+    the connection is down is lost and the writer and reader then wait on each
+    other forever."""
+    writer = MessageQueue(
+        n_reader=2,
+        n_local_reader=1,
+        max_chunk_bytes=1024 * 1024,
+        max_chunks=1,
+    )
+    # rank 1 is not among the local reader ranks, so it reads over TCP.
+    remote_reader = MessageQueue.create_from_handle(writer.export_handle(), rank=1)
+    try:
+        for socket in (writer.remote_socket, remote_reader.remote_socket):
+            assert (
+                socket.getsockopt(zmq.HEARTBEAT_IVL)
+                == shm_broadcast.REMOTE_HEARTBEAT_IVL_MS
+            )
+            assert (
+                socket.getsockopt(zmq.HEARTBEAT_TIMEOUT)
+                == shm_broadcast.REMOTE_HEARTBEAT_TIMEOUT_MS
+            )
+            assert (
+                socket.getsockopt(zmq.HEARTBEAT_TTL)
+                == shm_broadcast.REMOTE_HEARTBEAT_TTL_MS
+            )
+        # Same-node readers go over IPC and need no heartbeat.
+        assert writer.local_socket.getsockopt(zmq.HEARTBEAT_IVL) == 0
+    finally:
+        writer.shutdown()
+        remote_reader.shutdown()
+        for socket in (
+            writer.local_socket,
+            writer.remote_socket,
+            writer._spin_condition.local_notify_socket,
+            remote_reader.remote_socket,
+        ):
+            socket.close(linger=0)
 
 
 def _fake_disk_usage(free_bytes: int):

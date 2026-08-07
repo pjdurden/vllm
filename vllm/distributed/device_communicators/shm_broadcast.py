@@ -66,6 +66,16 @@ VLLM_RINGBUFFER_WARNING_INTERVAL = envs.VLLM_RINGBUFFER_WARNING_INTERVAL
 # wakeup stays negligible (one flag check per reader every 5s).
 SHM_READER_RECHECK_INTERVAL_MS = 5000
 
+# ZMTP heartbeat settings for the cross-node (TCP) sockets. PUB/SUB has no
+# retransmission, so anything published while the connection is down is lost
+# for good and the writer and reader then block on each other forever. An idle
+# connection carries no traffic and can be silently reaped by NAT/conntrack or
+# firewall state timeouts; heartbeats keep it busy so it survives idle periods,
+# and bound how long a genuinely dead peer stays undetected.
+REMOTE_HEARTBEAT_IVL_MS = 10000
+REMOTE_HEARTBEAT_TIMEOUT_MS = 30000
+REMOTE_HEARTBEAT_TTL_MS = 60000
+
 
 from_bytes_big = functools.partial(int.from_bytes, byteorder="big")
 
@@ -451,6 +461,20 @@ def _reduce_tensor(tensor: torch.Tensor):
     return tensor.__reduce_ex__(pickle.HIGHEST_PROTOCOL)
 
 
+def set_remote_socket_heartbeat(socket: zmq.Socket) -> None:
+    """Enable ZMTP heartbeats on a socket carrying cross-node traffic.
+
+    Must be called before ``bind``/``connect``: the options only apply to
+    connections established afterwards.
+
+    Args:
+        socket: The remote ``XPUB``/``SUB`` socket to configure.
+    """
+    socket.setsockopt(zmq.HEARTBEAT_IVL, REMOTE_HEARTBEAT_IVL_MS)
+    socket.setsockopt(zmq.HEARTBEAT_TIMEOUT, REMOTE_HEARTBEAT_TIMEOUT_MS)
+    socket.setsockopt(zmq.HEARTBEAT_TTL, REMOTE_HEARTBEAT_TTL_MS)
+
+
 @dataclass
 class Handle:
     local_reader_ranks: list[int] = field(default_factory=list)
@@ -525,6 +549,7 @@ class MessageQueue:
                 connect_ip = get_ip()
             self.remote_socket = context.socket(XPUB)
             self.remote_socket.setsockopt(XPUB_VERBOSE, True)
+            set_remote_socket_heartbeat(self.remote_socket)
             remote_subscribe_port = get_open_port()
             if is_valid_ipv6_address(connect_ip):
                 self.remote_socket.setsockopt(IPV6, 1)
@@ -595,6 +620,7 @@ class MessageQueue:
 
             self.remote_socket = context.socket(SUB)
             self.remote_socket.setsockopt_string(SUBSCRIBE, "")
+            set_remote_socket_heartbeat(self.remote_socket)
             if handle.remote_addr_ipv6:
                 self.remote_socket.setsockopt(IPV6, 1)
             socket_addr = handle.remote_subscribe_addr
